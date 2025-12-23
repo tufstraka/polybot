@@ -1,32 +1,58 @@
-# 🤖 Polybot - Spike Hunter
+# 🤖 Polybot - AI-Powered Spike Hunter
 
-**Automated trading bot for Polymarket that detects and trades price spikes.**
+**AI-powered autonomous trading bot for Polymarket with Amazon Bedrock integration.**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock-orange.svg)](https://aws.amazon.com/bedrock/)
 
 ---
 
 ## What It Does
 
-Polybot watches Polymarket prediction markets and looks for **sudden price movements** (spikes). When news breaks, prices often overreact for a few seconds before calming down. This bot catches those moments and trades the bounce-back.
+Polybot watches Polymarket prediction markets using a **hybrid AI + technical analysis** approach. It combines foundation model reasoning (Claude, Titan, Mistral) with statistical spike detection to identify and trade market inefficiencies.
 
-**The Strategy (Mean Reversion):**
-1. Price spikes UP → Bot SELLS (expecting price to drop back)
-2. Price spikes DOWN → Bot BUYS (expecting price to rise back)
-3. Small positions ($1-2) with tight exits (2-4% profit target)
+**The Strategy:**
+1. **Technical Detection**: CUSUM + EWMA + ROC detect price spikes
+2. **AI Analysis**: Bedrock models analyze market context and sentiment
+3. **Ensemble Signals**: Weighted combination of all signal sources
+4. **Smart Sizing**: Kelly Criterion + Monte Carlo risk validation
+5. **Mean Reversion**: Trade the bounce-back with calculated confidence
 
 ---
 
 ## Features
 
+### Core Trading
 ✅ **4-Layer Spike Detection**
 - CUSUM algorithm (Bell Labs) for regime changes
 - EWMA volatility bands (J.P. Morgan RiskMetrics)
 - ROC momentum confirmation
 - Liquidity validation
 
-✅ **Risk Management**
+### AI Integration (NEW)
+🤖 **Amazon Bedrock Models**
+- Claude 3 Sonnet/Haiku for market reasoning
+- Titan Text for cost-effective analysis
+- Mistral Large for diverse perspectives
+
+📊 **Ensemble Signal Generation**
+- Combines technical + AI + sentiment + mean reversion
+- Configurable autonomy level (0.0 = rules-only to 1.0 = AI-only)
+- Weighted signal aggregation
+
+📈 **Advanced Position Sizing**
+- Kelly Criterion for optimal bet sizing
+- Fractional Kelly for safety (default 25%)
+- Monte Carlo validation (1000+ simulations)
+
+📝 **Decision Transparency**
+- Full reasoning audit trail
+- All AI decisions logged to JSONL
+- Dashboard shows AI rationale
+
+### Risk Management
+✅ **Risk Controls**
 - Daily loss limit ($2 default)
 - Position sizing based on confidence
 - Circuit breaker after losing streaks
@@ -35,19 +61,21 @@ Polybot watches Polymarket prediction markets and looks for **sudden price movem
 ✅ **Paper Trading Mode**
 - Test without real money
 - Full simulation of trades
-- Track what would have happened
+- AI decisions tracked in dry-run
 
+### Monitoring
 ✅ **Real-time Dashboard**
 - See tracked markets
 - View detected signals
 - Monitor P&L and positions
-- Check risk status
+- **AI Reasoning panel** (NEW)
+- **Monte Carlo charts** (NEW)
 
 ✅ **Notifications**
 - Telegram alerts
 - Discord webhooks
 - Trade confirmations
-- Daily summaries
+- AI decision summaries
 
 ---
 
@@ -77,18 +105,28 @@ cp .env.example .env
 nano .env
 ```
 
-Add your Polymarket API credentials:
+Add your credentials:
 ```env
+# Required - Polymarket API
 POLYMARKET_API_KEY=your_key
 POLYMARKET_API_SECRET=your_secret
 POLYMARKET_PASSPHRASE=your_passphrase
+
+# Required for AI features
+AWS_ACCESS_KEY_ID=your_aws_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret
+AWS_REGION=us-east-1
+BEDROCK_MODEL_ID=anthropic.claude-3-sonnet-20240229-v1:0
 ```
 
 ### 3. Run (Paper Trading)
 
 ```bash
-# Start bot in dry-run mode (no real trades)
+# Start bot with AI (paper trading)
 python -m src.bot --dry-run
+
+# Start bot without AI (technical only)
+python -m src.bot --dry-run --no-ai
 ```
 
 ### 4. View Dashboard
@@ -153,7 +191,7 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 polybot/
 ├── src/
-│   ├── bot.py              # Main orchestrator
+│   ├── bot.py              # Main orchestrator (AI-integrated)
 │   ├── config/
 │   │   └── settings.py     # Configuration management
 │   ├── core/
@@ -164,21 +202,28 @@ polybot/
 │   │   ├── executor.py     # Order execution
 │   │   ├── position_manager.py  # Position tracking
 │   │   └── state_writer.py # Dashboard communication
+│   ├── ai/                 # AI DECISION ENGINE (NEW)
+│   │   ├── bedrock_client.py    # AWS Bedrock integration
+│   │   ├── decision_engine.py   # Main AI coordinator
+│   │   ├── signal_generator.py  # Ensemble signal generation
+│   │   ├── monte_carlo.py       # Monte Carlo simulation
+│   │   ├── reasoning_tracker.py # Decision audit trail
+│   │   └── prompts.py           # LLM prompt templates
 │   ├── risk/
 │   │   └── risk_manager.py # Risk management
 │   ├── notifications/
 │   │   ├── telegram.py     # Telegram alerts
 │   │   └── discord.py      # Discord webhooks
 │   └── dashboard/
-│       └── app.py          # Streamlit dashboard
+│       └── app.py          # Streamlit dashboard (AI panel)
 ├── config/
 │   └── config.yaml         # Main configuration
 ├── tests/                  # Unit tests
 ├── docs/
-│   └── DEPLOYMENT.md       # Deployment guide
-├── plans/
-│   ├── ARCHITECTURE.md     # System design
-│   └── SPIKE_DETECTION.md  # Algorithm details
+│   ├── DEPLOYMENT.md       # Deployment guide
+│   └── AI_INTEGRATION.md   # AI integration guide (NEW)
+├── data/
+│   └── reasoning/          # AI decision logs (NEW)
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
@@ -274,6 +319,9 @@ pytest tests/ -v
 # Run specific test file
 pytest tests/test_detector.py -v
 
+# Run AI component tests
+pytest tests/test_ai_components.py -v
+
 # Run with coverage
 pytest tests/ --cov=src
 ```
@@ -339,13 +387,22 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
+## Documentation
+
+- [Deployment Guide](docs/DEPLOYMENT.md) - AWS EC2 setup and Docker deployment
+- [AI Integration Guide](docs/AI_INTEGRATION.md) - Bedrock setup, Kelly Criterion, Monte Carlo
+
+---
+
 ## Acknowledgments
 
 - Inspired by discussions about spike trading on prediction markets
 - Uses [py-clob-client](https://github.com/Polymarket/py-clob-client) for Polymarket API
 - CUSUM algorithm from Bell Labs statistical process control
 - EWMA methodology from J.P. Morgan RiskMetrics
+- Amazon Bedrock for foundation model access
+- Kelly Criterion from "Fortune's Formula" by William Poundstone
 
 ---
 
-**Good luck! 🚀**
+**Good luck! 🚀🤖**
