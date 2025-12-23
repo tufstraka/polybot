@@ -1,0 +1,121 @@
+# config/config.yaml
+# ════════════════════════════════════════════════════════════════
+# POLYBOT CONFIGURATION - All Settings Explained in Plain English
+# ════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────
+# TRADING MODE
+# Are we using real money or just practicing?
+# ─────────────────────────────────────────────────────────────────
+mode:
+  paper_trading: true   # true = Practice with fake money (SAFE!)
+                        # false = Real money (be careful!)
+
+# ─────────────────────────────────────────────────────────────────
+# YOUR MONEY
+# How much capital and how to size bets
+# ─────────────────────────────────────────────────────────────────
+money:
+  starting_balance: 75    # Your total capital: $75
+  bet_size: 2             # Each trade uses $2 (safe small bets)
+  max_daily_loss: 2       # STOP everything if we lose $2 today
+
+# ─────────────────────────────────────────────────────────────────
+# SPIKE DETECTION
+# When should the bot trade? These control sensitivity.
+# ─────────────────────────────────────────────────────────────────
+detection:
+  # How much price must drift before we act
+  # 0.03 = 3 cents deviation triggers a trade
+  # Lower = more trades, Higher = fewer but stronger signals
+  cusum_threshold: 0.03
+  
+  # Ignore tiny wiggles smaller than this
+  # 0.005 = ignore moves under half a cent
+  cusum_slack: 0.005
+  
+  # How many seconds of history to analyze
+  # 20 = look at last 20 price points
+  ewma_span: 20
+  
+  # How far from "normal" counts as unusual
+  # 2.5 = price must be 2.5x normal wobble to trigger
+  ewma_multiplier: 2.5
+  
+  # Minimum speed of price movement
+  # 1.0 = price must be moving at least 1% to trade
+  roc_threshold: 1.0
+  
+  # How many seconds to measure speed over
+  # 3 = compare now vs 3 seconds ago
+  roc_periods: 3
+
+# ─────────────────────────────────────────────────────────────────
+# RISK MANAGEMENT  
+# Protecting your money from bad trades
+# ─────────────────────────────────────────────────────────────────
+risk:
+  # When to automatically sell for profit
+  # 3.0 = sell when trade is up 3%
+  take_profit_percent: 3.0
+  
+  # When to automatically cut losses
+  # 2.0 = sell when trade is down 2%
+  stop_loss_percent: 2.0
+  
+  # Maximum trades open at same time
+  # 2 = never have more than 2 active bets
+  max_open_trades: 2
+  
+  # Wait time before trading same market again
+  # 30 = after trading, wait 30 seconds
+  cooldown_seconds: 30
+  
+  # Stop loss/profit adapt to volatility
+  # 2.0 = stops are 2x current market wobble
+  atr_stop_multiplier: 2.0
+  atr_profit_multiplier: 3.0
+
+# ─────────────────────────────────────────────────────────────────
+# MARKET FILTERS
+# Which markets are worth trading?
+# ─────────────────────────────────────────────────────────────────
+filters:
+  # Only trade markets with enough daily activity
+  # 5000 = at least $5,000 daily volume
+  min_daily_volume: 5000
+  
+  # Only trade if enough money in orderbook
+  # 50 = at least $50 available to trade
+  min_liquidity_usd: 50
+  
+  # Only trade if buy/sell gap is small
+  # 3.0 = max 3% spread (cheaper to trade)
+  max_spread_percent: 3.0
+
+# ─────────────────────────────────────────────────────────────────
+# POLLING
+# How often to check prices
+# ─────────────────────────────────────────────────────────────────
+polling:
+  # Check prices every X seconds
+  interval_seconds: 1
+  
+  # Refresh market list every X seconds
+  market_refresh_seconds: 60
+  
+  # How many price points to keep in memory
+  price_history_size: 60
+
+# ─────────────────────────────────────────────────────────────────
+# NOTIFICATIONS
+# How do you want to be notified?
+# ─────────────────────────────────────────────────────────────────
+notifications:
+  telegram_enabled: false   # Set to true and configure .env
+  discord_enabled: false    # Set to true and configure .env
+  
+  # What events to notify about
+  notify_on_trade: true     # "Bot just bought/sold!"
+  notify_on_spike: true     # "Spike detected in market X!"
+  notify_on_daily_summary: true  # "Today's results: +$0.45"

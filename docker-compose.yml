@@ -1,0 +1,117 @@
+# Polybot Docker Compose Configuration
+#
+# This runs both the bot and dashboard as separate services.
+#
+# Usage:
+#   docker-compose up -d              # Start all services
+#   docker-compose up -d bot          # Start only the bot
+#   docker-compose up -d dashboard    # Start only the dashboard
+#   docker-compose logs -f bot        # View bot logs
+#   docker-compose down               # Stop all services
+
+version: '3.8'
+
+services:
+  # The main trading bot
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polybot
+    restart: unless-stopped
+    
+    # Environment variables (override with .env file)
+    env_file:
+      - .env
+    
+    environment:
+      - PYTHONPATH=/app
+      - POLYBOT_DRY_RUN=true
+    
+    volumes:
+      # Persist data between restarts
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Mount config for easy editing
+      - ./config:/app/config:ro
+    
+    # Run the bot in dry-run mode by default
+    command: python -m src.bot --dry-run
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('/app/data/bot_state.json') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    networks:
+      - polybot-network
+
+  # The Streamlit dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polybot-dashboard
+    restart: unless-stopped
+    
+    env_file:
+      - .env
+    
+    environment:
+      - PYTHONPATH=/app
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    
+    volumes:
+      # Share data directory with bot
+      - ./data:/app/data:ro
+      # Mount config
+      - ./config:/app/config:ro
+    
+    ports:
+      - "8501:8501"
+    
+    # Run Streamlit dashboard
+    command: streamlit run src/dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+    
+    depends_on:
+      - bot
+    
+    networks:
+      - polybot-network
+
+  # Live trading mode (use with caution!)
+  bot-live:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polybot-live
+    restart: unless-stopped
+    
+    env_file:
+      - .env
+    
+    environment:
+      - PYTHONPATH=/app
+      - POLYBOT_DRY_RUN=false
+    
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+    
+    # Run in LIVE mode - real trades!
+    command: python -m src.bot
+    
+    profiles:
+      - live
+    
+    networks:
+      - polybot-network
+
+networks:
+  polybot-network:
+    driver: bridge
