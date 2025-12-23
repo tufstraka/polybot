@@ -1,6 +1,7 @@
 # config/config.yaml
 # ════════════════════════════════════════════════════════════════
-# POLYBOT CONFIGURATION - All Settings Explained in Plain English
+# POLYBOT AI-POWERED TRADING BOT CONFIGURATION
+# All Settings Explained in Plain English
 # ════════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────────
@@ -10,6 +11,7 @@
 mode:
   paper_trading: true   # true = Practice with fake money (SAFE!)
                         # false = Real money (be careful!)
+  ai_enabled: true      # Enable AI decision engine (requires AWS Bedrock)
 
 # ─────────────────────────────────────────────────────────────────
 # YOUR MONEY
@@ -140,3 +142,61 @@ notifications:
   notify_on_trade: true     # "Bot just bought/sold!"
   notify_on_spike: true     # "Spike detected in market X!"
   notify_on_daily_summary: true  # "Today's results: +$0.45"
+
+# ─────────────────────────────────────────────────────────────────
+# AI DECISION ENGINE (Amazon Bedrock)
+# Configure AI-powered trading decisions
+# ─────────────────────────────────────────────────────────────────
+ai:
+  # AWS Bedrock model to use for decisions
+  # Options: claude-3-sonnet, claude-3-haiku, titan-text, mistral-large
+  model: claude-3-sonnet
+  
+  # AWS region for Bedrock API
+  region: us-east-1
+  
+  # How much to trust the AI (0.0-1.0)
+  # 1.0 = fully autonomous, 0.0 = AI advises but rules decide
+  autonomy_level: 0.7
+  
+  # Minimum confidence for AI to recommend trade
+  # 0.6 = AI must be at least 60% confident
+  min_confidence: 0.6
+  
+  # Maximum tokens for AI response
+  max_tokens: 1024
+  
+  # Temperature for model creativity (lower = more deterministic)
+  temperature: 0.3
+  
+  # How often to re-analyze markets (seconds)
+  # 60 = ask AI every minute
+  analysis_interval: 60
+  
+  # Enable sentiment analysis from market descriptions
+  sentiment_enabled: true
+  
+  # Enable Monte Carlo simulation for risk assessment
+  monte_carlo_enabled: true
+  monte_carlo_simulations: 1000
+
+# ─────────────────────────────────────────────────────────────────
+# ADVANCED POSITION SIZING (Kelly Criterion)
+# Scientific approach to bet sizing based on edge and variance
+# ─────────────────────────────────────────────────────────────────
+position_sizing:
+  # Method: fixed, kelly, or adaptive
+  # - fixed: always bet same amount (bet_size from money section)
+  # - kelly: use Kelly Criterion formula based on AI confidence
+  # - adaptive: Kelly with volatility adjustments
+  method: kelly
+  
+  # Kelly fraction (0.0-1.0)
+  # 0.25 = use 1/4 of full Kelly (safer, recommended)
+  kelly_fraction: 0.25
+  
+  # Maximum position as fraction of capital
+  max_position_fraction: 0.1
+  
+  # Minimum trade size in dollars
+  min_trade_size: 1.0

@@ -277,7 +277,7 @@ class PolymarketClient:
     # Market Data
     # ═══════════════════════════════════════════════════════════════════════════
     
-    async def get_markets(self, limit: int = 100, active_only: bool = True) -> List[Market]:
+    async def get_markets(self, limit: int = 100, active_only: bool = True, offset: int = 0) -> List[Market]:
         """
         Fetch markets from Polymarket using Gamma API for better market discovery.
         
@@ -285,8 +285,9 @@ class PolymarketClient:
         the CLOB API doesn't include.
         
         Args:
-            limit: Maximum number of markets to fetch
+            limit: Maximum number of markets to fetch per request
             active_only: If True, only return markets that are accepting orders
+            offset: Number of markets to skip (for pagination)
             
         Returns:
             List of Market objects
@@ -297,7 +298,7 @@ class PolymarketClient:
             import httpx
             
             # Use Gamma API for market discovery (has volume, liquidity, etc.)
-            params = {'limit': limit}
+            params = {'limit': limit, 'offset': offset}
             if active_only:
                 params['active'] = 'true'
                 params['closed'] = 'false'
@@ -321,7 +322,7 @@ class PolymarketClient:
                 if market:
                     markets.append(market)
             
-            logger.info(f"Fetched {len(markets)} markets from Gamma API")
+            logger.info(f"Fetched {len(markets)} markets from Gamma API (offset={offset})")
             return markets
             
         except Exception as e:

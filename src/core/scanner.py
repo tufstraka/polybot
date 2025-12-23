@@ -137,12 +137,13 @@ class MarketScanner:
         # Blacklist markets we don't want to trade
         self._blacklist: Set[str] = set()
     
-    async def refresh_markets(self, force: bool = False) -> int:
+    async def refresh_markets(self, force: bool = False, max_markets: int = None) -> int:
         """
         Refresh the list of markets from Polymarket.
         
         Args:
             force: If True, refresh even if cache is fresh
+            max_markets: Maximum markets to validate (None = no limit)
             
         Returns:
             Number of markets found
@@ -154,14 +155,31 @@ class MarketScanner:
                 return len(self._markets)
         
         try:
-            # Fetch markets from API
-            markets = await self.client.get_markets(limit=200)
+            # Fetch ALL markets from API (increased limit)
+            all_markets = []
+            offset = 0
+            batch_size = 500
+            
+            while True:
+                markets = await self.client.get_markets(limit=batch_size, offset=offset)
+                if not markets:
+                    break
+                all_markets.extend(markets)
+                offset += len(markets)
+                
+                # Safety limit to prevent infinite loop
+                if len(all_markets) >= 2000:
+                    break
+                    
+                await asyncio.sleep(0.2)  # Rate limiting
+            
+            logger.info(f"Fetched {len(all_markets)} total markets from API")
             
             # Filter by basic criteria first
-            filtered = self.filter_markets(markets)
+            filtered = self.filter_markets(all_markets)
             
-            # Validate orderbooks - many markets have accepting_orders=True but no orderbook
-            validated = await self._validate_orderbooks(filtered, max_markets=50)
+            # Validate orderbooks - use provided max or no limit
+            validated = await self._validate_orderbooks(filtered, max_markets=max_markets or 200)
             
             # Update cache with only validated markets
             self._markets = {m.id: m for m in validated}
@@ -177,7 +195,7 @@ class MarketScanner:
             logger.error(f"Failed to refresh markets: {e}")
             return len(self._markets)
     
-    async def _validate_orderbooks(self, markets: List[Market], max_markets: int = 50) -> List[Market]:
+    async def _validate_orderbooks(self, markets: List[Market], max_markets: int = 200) -> List[Market]:
         """
         Validate that markets have actual orderbooks.
         
@@ -199,10 +217,10 @@ class MarketScanner:
         
         # Rate limiting settings
         request_delay = self.settings.rate_limits.request_delay
-        batch_size = 10  # Validate in batches
+        batch_size = 20  # Validate in larger batches
         
         for market in markets:
-            if len(validated) >= max_markets:
+            if max_markets and len(validated) >= max_markets:
                 break
                 
             if not market.yes_token_id:
@@ -304,12 +322,12 @@ class MarketScanner:
         
         return filtered
     
-    async def get_tradable_markets(self, limit: int = 20) -> List[Market]:
+    async def get_tradable_markets(self, limit: int = None) -> List[Market]:
         """
         Get top tradable markets sorted by score.
         
         Args:
-            limit: Maximum number of markets to return
+            limit: Maximum number of markets to return (None = all)
             
         Returns:
             List of Market objects, sorted by quality score
@@ -328,8 +346,10 @@ class MarketScanner:
         ]
         scored.sort(key=lambda x: x[1].total_score, reverse=True)
         
-        # Return top markets
-        return [m for m, _ in scored[:limit]]
+        # Return markets (all if no limit specified)
+        if limit:
+            return [m for m, _ in scored[:limit]]
+        return [m for m, _ in scored]
     
     async def get_market_snapshot(self, market_id: str) -> Optional[MarketSnapshot]:
         """
@@ -379,7 +399,7 @@ class MarketScanner:
                 snapshots[market_id] = snapshot
         return snapshots
     
-    async def get_all_tradable_snapshots(self, limit: int = 20) -> List[MarketSnapshot]:
+    async def get_all_tradable_snapshots(self, limit: int = None) -> List[MarketSnapshot]:
         """
         Get snapshots for all tradable markets.
         
@@ -387,7 +407,7 @@ class MarketScanner:
         current state of all markets we're watching.
         
         Args:
-            limit: Maximum number of markets
+            limit: Maximum number of markets (None = all)
             
         Returns:
             List of MarketSnapshot objects

@@ -1,10 +1,11 @@
 
 """
-Polybot Dashboard - Modern Trading Dashboard
-============================================
+Polybot AI Dashboard - Modern Trading Dashboard
+===============================================
 
-A sleek, modern dashboard for monitoring your spike hunting bot.
-Features glassmorphism design, real-time charts, and intuitive UX.
+A sleek, modern dashboard for monitoring your AI-powered trading bot.
+Features glassmorphism design, real-time charts, AI reasoning display,
+and intuitive UX.
 
 Run with:
     streamlit run src/dashboard/app.py
@@ -24,6 +25,13 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.core.state_writer import StateReader
+
+# Try to import AI components
+try:
+    from src.ai.reasoning_tracker import get_reasoning_tracker
+    AI_AVAILABLE = True
+except ImportError:
+    AI_AVAILABLE = False
 
 # =============================================================================
 # PAGE CONFIGURATION
@@ -274,21 +282,23 @@ def render_hero_header(state: dict):
     """Render the hero header with status."""
     status = state.get("bot_status", "stopped")
     mode = state.get("bot_mode", "dry_run")
+    ai_enabled = state.get("ai_enabled", False)
     
     status_class = "status-running" if status == "running" else "status-stopped"
     status_dot = "●" if status == "running" else "○"
     mode_text = "Paper Trading" if mode == "dry_run" else "Live Trading"
+    ai_badge = "🤖 AI Enabled" if ai_enabled else ""
     
     st.markdown(f"""
     <div class="hero-header">
         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
             <div>
-                <h1 class="hero-title">⚡ Polybot Spike Hunter</h1>
-                <p class="hero-subtitle">Real-time market monitoring & automated trading</p>
+                <h1 class="hero-title">⚡ Polybot AI Trading</h1>
+                <p class="hero-subtitle">AI-powered autonomous trading with Amazon Bedrock</p>
             </div>
             <div style="text-align: right;">
                 <span class="status-badge {status_class}">{status_dot} {status.upper()}</span>
-                <p style="margin: 8px 0 0 0; font-size: 14px; color: #a0a0a0;">{mode_text}</p>
+                <p style="margin: 8px 0 0 0; font-size: 14px; color: #a0a0a0;">{mode_text} {ai_badge}</p>
             </div>
         </div>
     </div>
@@ -297,14 +307,14 @@ def render_hero_header(state: dict):
 
 def render_key_metrics(state: dict):
     """Render the key metrics row."""
-    perf = state.get("performance", {})
+    perf = state.get("performance") or {}
     
-    daily_pnl = perf.get("daily_pnl", 0)
-    total_pnl = perf.get("total_pnl", 0)
-    capital = perf.get("current_capital", 75)
-    initial = perf.get("initial_capital", 75)
-    win_rate = perf.get("win_rate", 0)
-    trades = perf.get("total_trades", 0)
+    daily_pnl = perf.get("daily_pnl", 0) or 0
+    total_pnl = perf.get("total_pnl", 0) or 0
+    capital = perf.get("current_capital", 75) or 75
+    initial = perf.get("initial_capital", 75) or 75
+    win_rate = perf.get("win_rate", 0) or 0
+    trades = perf.get("total_trades", 0) or 0
     markets = state.get("markets_tracked", 0)
     signals = state.get("signals_today", 0)
     
@@ -371,14 +381,14 @@ def render_key_metrics(state: dict):
 
 def render_risk_panel(state: dict):
     """Render the risk management panel using native Streamlit components."""
-    risk = state.get("risk", {})
+    risk = state.get("risk") or {}
     
-    status = risk.get("status", "ok")
-    daily_pnl = risk.get("daily_pnl", 0)
-    daily_limit = risk.get("daily_limit", 2)
-    remaining = risk.get("remaining_risk", daily_limit)
+    status = risk.get("status", "ok") or "ok"
+    daily_pnl = risk.get("daily_pnl", 0) or 0
+    daily_limit = risk.get("daily_limit", 2) or 2
+    remaining = risk.get("remaining_risk", daily_limit) or daily_limit
     can_trade = risk.get("can_trade", True)
-    consec = risk.get("consecutive_losses", 0)
+    consec = risk.get("consecutive_losses", 0) or 0
     cb_active = risk.get("circuit_breaker_active", False)
     
     risk_used = abs(daily_pnl) / daily_limit * 100 if daily_limit > 0 else 0
@@ -473,7 +483,7 @@ def render_positions(state: dict):
 
 
 def render_signals(state: dict):
-    """Render recent signals using native Streamlit components."""
+    """Render recent signals using native Streamlit components with pagination."""
     signals = state.get("recent_signals", [])
     
     with st.container():
@@ -482,9 +492,32 @@ def render_signals(state: dict):
         if not signals:
             st.info("📡 No signals detected - Scanning for spikes...")
         else:
-            for sig in signals[-5:][::-1]:
+            # Pagination for signals
+            signals_per_page = 10
+            total_signals = len(signals)
+            total_pages = max(1, (total_signals + signals_per_page - 1) // signals_per_page)
+            
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                current_page = st.number_input(
+                    "Page",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=1,
+                    key="signals_page"
+                )
+            with col2:
+                st.caption(f"Page {current_page}/{total_pages} ({total_signals} signals)")
+            
+            # Calculate slice for current page (reverse order - newest first)
+            reversed_signals = list(reversed(signals))
+            start_idx = (current_page - 1) * signals_per_page
+            end_idx = min(start_idx + signals_per_page, total_signals)
+            page_signals = reversed_signals[start_idx:end_idx]
+            
+            for sig in page_signals:
                 direction = sig.get("direction", "").lower()
-                is_up = direction == "up"
+                is_up = direction == "up" or direction == "buy"
                 icon = "🚀" if is_up else "📉"
                 
                 timestamp = sig.get("detected_at", "")
@@ -496,30 +529,29 @@ def render_signals(state: dict):
                     except Exception:
                         pass
                 
-                name = sig.get("market_name", "Unknown")
-                if len(name) > 35:
-                    name = name[:35] + "..."
+                name = sig.get("market_name", "Unknown")  # FULL name
                 
                 conf = sig.get("confidence", 0)
                 price = sig.get("price", 0)
                 status = sig.get("status", "detected")
-                status_icon = {"detected": "🔵", "traded": "🟢", "expired": "⚪"}.get(status, "⚪")
+                status_icon = {"detected": "🔵", "traded": "🟢", "expired": "⚪", "failed": "🔴"}.get(status, "⚪")
+                trigger = sig.get("trigger_reason", "")
                 
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.markdown(f"**{icon} {name}**")
-                    st.caption(f"${price:.3f} • {conf:.0%} confidence")
-                with col2:
-                    st.markdown(f"*{time_str}*")
-                    st.caption(f"{status_icon} {status}")
-                
-                st.divider()
+                with st.expander(f"{icon} {name}", expanded=False):
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.markdown(f"**Price:** ${price:.3f}")
+                        st.markdown(f"**Confidence:** {conf:.0%}")
+                        st.markdown(f"**Trigger:** {trigger}")
+                    with col2:
+                        st.markdown(f"**Time:** {time_str}")
+                        st.markdown(f"**Status:** {status_icon} {status}")
         
         st.markdown("---")
 
 
 def render_markets_table(state: dict):
-    """Render tracked markets table."""
+    """Render tracked markets table with pagination."""
     markets = state.get("markets", [])
     
     st.markdown("""
@@ -539,20 +571,40 @@ def render_markets_table(state: dict):
         </div>
         """, unsafe_allow_html=True)
     else:
-        df = pd.DataFrame(markets)
+        # Pagination for markets
+        markets_per_page = 25
+        total_markets = len(markets)
+        total_pages = max(1, (total_markets + markets_per_page - 1) // markets_per_page)
         
-        # Format columns
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            current_page = st.number_input(
+                "Page",
+                min_value=1,
+                max_value=total_pages,
+                value=1,
+                key="markets_page"
+            )
+        with col2:
+            st.caption(f"Showing page {current_page} of {total_pages} ({total_markets} total markets)")
+        
+        # Calculate slice for current page
+        start_idx = (current_page - 1) * markets_per_page
+        end_idx = min(start_idx + markets_per_page, total_markets)
+        page_markets = markets[start_idx:end_idx]
+        
+        # Format columns for current page
         display_data = []
-        for m in markets[:15]:  # Show top 15
-            name = m.get("name", "Unknown")
-            if len(name) > 40:
-                name = name[:40] + "..."
+        for m in page_markets:
+            name = m.get("name", "Unknown")  # Show FULL name
             
             display_data.append({
                 "Market": name,
                 "Price": f"${m.get('current_price', 0):.3f}",
                 "EWMA": f"${m.get('ewma_price', 0):.3f}",
                 "ROC": f"{m.get('roc', 0):+.2%}",
+                "CUSUM+": f"{m.get('cusum_pos', 0):.4f}",
+                "CUSUM-": f"{m.get('cusum_neg', 0):.4f}",
                 "Volume 24h": f"${m.get('volume_24h', 0):,.0f}",
             })
         
@@ -560,7 +612,8 @@ def render_markets_table(state: dict):
             st.dataframe(
                 pd.DataFrame(display_data),
                 use_container_width=True,
-                hide_index=True
+                hide_index=True,
+                height=400  # Scrollable table
             )
     
     st.markdown("</div>", unsafe_allow_html=True)
@@ -702,6 +755,224 @@ def render_activity_log(state: dict):
                 st.dataframe(df, use_container_width=True, hide_index=True, height=300)
 
 
+def render_ai_reasoning(state: dict):
+    """Render AI reasoning and decision panel with full text and pagination."""
+    with st.container():
+        st.subheader("🤖 AI Decision Engine")
+        
+        # Check if AI is available
+        if not AI_AVAILABLE:
+            st.warning("AI module not available. Configure AWS Bedrock credentials to enable.")
+            return
+        
+        # Get AI stats from state
+        ai_stats = state.get("ai_stats", {})
+        
+        if not ai_stats:
+            st.info("🧠 AI analysis not yet active. Start the bot with AI enabled.")
+            return
+        
+        # AI Status Row
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            model = ai_stats.get("model", "claude-3-sonnet")
+            st.metric("Model", model)
+        
+        with col2:
+            decisions = ai_stats.get("decisions_today", 0)
+            st.metric("Decisions Today", str(decisions))
+        
+        with col3:
+            avg_latency = ai_stats.get("avg_latency_ms", 0)
+            st.metric("Avg Latency", f"{avg_latency:.0f}ms")
+        
+        st.markdown("---")
+        
+        # Recent AI Decisions with pagination
+        st.markdown("**AI Reasoning History**")
+        
+        reasoning_entries = state.get("ai_reasoning", [])
+        
+        if not reasoning_entries:
+            # Try to load from reasoning tracker
+            try:
+                tracker = get_reasoning_tracker()
+                reasoning_entries = tracker.get_for_dashboard()
+            except Exception:
+                reasoning_entries = []
+        
+        if not reasoning_entries:
+            st.info("No AI decisions recorded yet.")
+        else:
+            # Pagination settings
+            entries_per_page = 10
+            total_entries = len(reasoning_entries)
+            total_pages = max(1, (total_entries + entries_per_page - 1) // entries_per_page)
+            
+            # Page selector
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                current_page = st.number_input(
+                    "Page",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=1,
+                    key="ai_reasoning_page"
+                )
+            with col2:
+                st.caption(f"Showing page {current_page} of {total_pages} ({total_entries} total entries)")
+            
+            # Calculate slice for current page
+            start_idx = (current_page - 1) * entries_per_page
+            end_idx = min(start_idx + entries_per_page, total_entries)
+            page_entries = reasoning_entries[start_idx:end_idx]
+            
+            for entry in page_entries:
+                action = entry.get("action", "HOLD")
+                confidence = entry.get("confidence", "0%")
+                market = entry.get("market", "Unknown")
+                reasoning = entry.get("reasoning", "No reasoning available")  # FULL TEXT
+                time_str = entry.get("time", "?")
+                outcome = entry.get("outcome", "pending")
+                pnl = entry.get("pnl", "-")
+                
+                # Color code action
+                action_colors = {"BUY": "🟢", "SELL": "🔴", "HOLD": "⚪"}
+                action_icon = action_colors.get(action, "⚪")
+                
+                # Outcome colors
+                outcome_colors = {
+                    "pending": "🔵",
+                    "executed": "🟡",
+                    "profitable": "🟢",
+                    "unprofitable": "🔴",
+                    "breakeven": "⚪"
+                }
+                outcome_icon = outcome_colors.get(outcome, "⚪")
+                
+                # Show full market name and reasoning
+                with st.expander(f"{action_icon} {action} - {market} ({confidence})", expanded=False):
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        st.markdown(f"**Market:** {market}")
+                        st.markdown(f"**Action:** {action_icon} {action}")
+                        st.markdown(f"**Confidence:** {confidence}")
+                    
+                    with col2:
+                        st.markdown(f"**Time:** {time_str}")
+                        st.markdown(f"**Outcome:** {outcome_icon} {outcome}")
+                        if pnl != "-":
+                            st.markdown(f"**P&L:** {pnl}")
+                    
+                    st.markdown("---")
+                    st.markdown("**📝 Full AI Reasoning:**")
+                    
+                    # Show full reasoning text in a scrollable container
+                    if reasoning and len(reasoning) > 0:
+                        st.text_area(
+                            "AI Analysis",
+                            value=reasoning,
+                            height=300,  # Larger area for full text
+                            disabled=True,
+                            key=f"reasoning_{time_str}_{hash(market) % 10000}"
+                        )
+                    else:
+                        st.info("No reasoning text available")
+                    
+                    # Show additional details in a collapsed section
+                    with st.expander("📊 Technical Details", expanded=False):
+                        entry_price = entry.get("entry_price", 0) or 0
+                        stop_loss = entry.get("stop_loss", 0) or 0
+                        take_profit = entry.get("take_profit", 0) or 0
+                        position_size = entry.get("position_size", 0) or 0
+                        # Handle both formats: tokens_used from state or input_tokens+output_tokens from tracker
+                        tokens = entry.get("tokens_used", 0) or (entry.get("input_tokens", 0) + entry.get("output_tokens", 0))
+                        latency = entry.get("latency_ms", 0) or 0
+                        
+                        tech_col1, tech_col2 = st.columns(2)
+                        with tech_col1:
+                            st.markdown(f"- **Entry Price:** ${float(entry_price):.4f}")
+                            st.markdown(f"- **Stop Loss:** ${float(stop_loss):.4f}")
+                            st.markdown(f"- **Take Profit:** ${float(take_profit):.4f}")
+                        with tech_col2:
+                            st.markdown(f"- **Position Size:** ${float(position_size):.2f}")
+                            st.markdown(f"- **Tokens Used:** {int(tokens)}")
+                            st.markdown(f"- **AI Latency:** {float(latency):.0f}ms")
+        
+        st.markdown("---")
+        
+        # AI Performance Summary
+        if ai_stats:
+            st.markdown("**AI Performance**")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                win_rate = ai_stats.get("win_rate", 0)
+                st.metric("Win Rate", f"{win_rate:.0%}")
+            
+            with col2:
+                profitable = ai_stats.get("profitable_trades", 0)
+                st.metric("Profitable", str(profitable))
+            
+            with col3:
+                total_tokens = ai_stats.get("total_tokens", 0)
+                st.metric("Tokens Used", f"{total_tokens:,}")
+            
+            with col4:
+                avg_conf = ai_stats.get("avg_confidence", 0)
+                st.metric("Avg Confidence", f"{avg_conf:.0%}")
+
+
+def render_monte_carlo(state: dict):
+    """Render Monte Carlo simulation results."""
+    with st.container():
+        st.subheader("📊 Risk Analysis (Monte Carlo)")
+        
+        mc_results = state.get("monte_carlo", {})
+        
+        if not mc_results:
+            st.info("No Monte Carlo simulation results available.")
+            return
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            prob_profit = mc_results.get("prob_profit", 0)
+            st.metric("P(Profit)", f"{prob_profit:.0%}")
+        
+        with col2:
+            var_95 = mc_results.get("var_95", 0)
+            st.metric("VaR (95%)", f"${abs(var_95):.2f}")
+        
+        with col3:
+            risk_assessment = mc_results.get("risk_assessment", "Unknown")
+            st.metric("Risk Level", risk_assessment)
+        
+        # Risk distribution chart if data available
+        if "distribution" in mc_results:
+            fig = go.Figure()
+            fig.add_trace(go.Histogram(
+                x=mc_results["distribution"],
+                nbinsx=50,
+                marker_color="#3b82f6",
+                opacity=0.7
+            ))
+            fig.update_layout(
+                title="Return Distribution",
+                xaxis_title="Return ($)",
+                yaxis_title="Frequency",
+                height=200,
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=20, r=20, t=40, b=20)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+
 # =============================================================================
 # MAIN APPLICATION
 # =============================================================================
@@ -742,18 +1013,41 @@ def main():
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Main content
-    col1, col2 = st.columns([2, 1])
+    # Tabs for different views
+    tab1, tab2 = st.tabs(["📈 Trading", "🤖 AI Analysis"])
     
-    with col1:
-        render_markets_table(state)
-        render_price_chart(state)
+    with tab1:
+        # Main content - Trading view
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            render_markets_table(state)
+            render_price_chart(state)
+        
+        with col2:
+            render_risk_panel(state)
+            render_positions(state)
+            render_signals(state)
+            render_activity_log(state)
     
-    with col2:
-        render_risk_panel(state)
-        render_positions(state)
-        render_signals(state)
-        render_activity_log(state)
+    with tab2:
+        # AI Analysis view
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            render_ai_reasoning(state)
+        
+        with col2:
+            render_monte_carlo(state)
+            
+            # AI Stats Summary
+            st.subheader("🧠 AI Stats")
+            ai_stats = state.get("ai_stats", {})
+            
+            if ai_stats:
+                st.json(ai_stats)
+            else:
+                st.info("AI stats will appear once the bot starts with AI enabled.")
     
     # Auto-refresh
     refresh_rate = st.sidebar.slider("Refresh (seconds)", 2, 30, 5, key="refresh")

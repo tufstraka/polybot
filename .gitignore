@@ -1,0 +1,14 @@
+venv
+src/__pycache__/
+tests/__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
+.env
+__pycache__/
+.ipynb_checkpoints
+output/
+logs/
+*.log
+coverage

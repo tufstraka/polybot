@@ -78,6 +78,10 @@ class PositionState:
     take_profit: float
     opened_at: str
     status: str = "open"        # open, closed
+    unrealized_pnl_pct: float = 0.0  # P&L as percentage
+    exit_price: float = 0.0     # Price at close (for closed positions)
+    exit_reason: str = ""       # stop_loss, take_profit, manual
+    closed_at: str = ""         # When position was closed
 
 
 @dataclass
@@ -111,6 +115,46 @@ class PerformanceState:
 
 
 @dataclass
+class AIStatsState:
+    """AI decision engine statistics."""
+    model: str = "claude-3-sonnet"
+    decisions_today: int = 0
+    avg_latency_ms: float = 0.0
+    total_tokens: int = 0
+    avg_confidence: float = 0.0
+    win_rate: float = 0.0
+    profitable_trades: int = 0
+
+
+@dataclass
+class AIReasoningEntry:
+    """A single AI reasoning entry."""
+    action: str                 # BUY, SELL, HOLD
+    confidence: str             # "75%"
+    market: str
+    reasoning: str
+    time: str
+    outcome: str = "pending"    # pending, executed, profitable, unprofitable
+    pnl: str = "-"
+    # Technical details
+    entry_price: float = 0.0
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
+    position_size: float = 0.0
+    tokens_used: int = 0
+    latency_ms: float = 0.0
+
+
+@dataclass
+class MonteCarloState:
+    """Monte Carlo simulation results."""
+    prob_profit: float = 0.0
+    var_95: float = 0.0
+    risk_assessment: str = "Unknown"
+    distribution: List[float] = field(default_factory=list)
+
+
+@dataclass
 class BotState:
     """
     Complete state of the bot.
@@ -121,6 +165,7 @@ class BotState:
     # Bot info
     bot_status: str = "stopped"     # running, paused, stopped, error
     bot_mode: str = "dry_run"       # live, dry_run
+    ai_enabled: bool = False        # AI decision engine status
     uptime_seconds: float = 0.0
     last_heartbeat: str = ""
     
@@ -141,6 +186,11 @@ class BotState:
     
     # Performance
     performance: Optional[PerformanceState] = None
+    
+    # AI Decision Engine
+    ai_stats: Optional[AIStatsState] = None
+    ai_reasoning: List[AIReasoningEntry] = field(default_factory=list)
+    monte_carlo: Optional[MonteCarloState] = None
     
     # Recent logs/events
     recent_events: List[Dict[str, Any]] = field(default_factory=list)
@@ -217,6 +267,7 @@ class StateWriter:
         state_dict = {
             "bot_status": self._state.bot_status,
             "bot_mode": self._state.bot_mode,
+            "ai_enabled": self._state.ai_enabled,
             "uptime_seconds": time.time() - self._start_time,
             "last_heartbeat": datetime.utcnow().isoformat(),
             "markets_tracked": self._state.markets_tracked,
@@ -227,6 +278,9 @@ class StateWriter:
             "positions": [asdict(p) for p in self._state.positions],
             "risk": asdict(self._state.risk) if self._state.risk else None,
             "performance": asdict(self._state.performance) if self._state.performance else None,
+            "ai_stats": asdict(self._state.ai_stats) if self._state.ai_stats else None,
+            "ai_reasoning": [asdict(r) for r in self._state.ai_reasoning],  # Keep ALL entries
+            "monte_carlo": asdict(self._state.monte_carlo) if self._state.monte_carlo else None,
             "recent_events": self._state.recent_events[-self.max_events:],
             "last_error": self._state.last_error,
             "error_count": self._state.error_count
@@ -354,12 +408,32 @@ class StateWriter:
             )
             self._dirty = True
     
-    def close_position(self, position_id: str):
-        """Mark a position as closed."""
+    def close_position(
+        self,
+        position_id: str,
+        exit_price: float = 0.0,
+        exit_reason: str = "",
+        realized_pnl: float = 0.0
+    ):
+        """
+        Mark a position as closed with exit details.
+        
+        Args:
+            position_id: ID of position to close
+            exit_price: Price at which position was closed
+            exit_reason: Reason for exit (stop_loss, take_profit, manual)
+            realized_pnl: The realized profit/loss
+        """
         with self._lock:
             for position in self._state.positions:
                 if position.position_id == position_id:
                     position.status = "closed"
+                    position.exit_price = exit_price
+                    position.exit_reason = exit_reason
+                    position.closed_at = datetime.utcnow().isoformat()
+                    # Update unrealized to realized (for display)
+                    if realized_pnl != 0:
+                        position.unrealized_pnl = realized_pnl
                     break
             
             self._state.open_positions = sum(
@@ -387,6 +461,50 @@ class StateWriter:
         """
         with self._lock:
             self._state.performance = performance
+            self._dirty = True
+    
+    def update_ai_enabled(self, enabled: bool):
+        """Update AI enabled status."""
+        with self._lock:
+            self._state.ai_enabled = enabled
+            self._dirty = True
+    
+    def update_ai_stats(self, stats: AIStatsState):
+        """
+        Update AI decision engine statistics.
+        
+        The dashboard shows this in the AI Analysis tab.
+        """
+        with self._lock:
+            self._state.ai_stats = stats
+            self._dirty = True
+    
+    def add_ai_reasoning(self, reasoning: AIReasoningEntry):
+        """
+        Add an AI reasoning entry.
+        
+        Shows the AI's decision-making process in the dashboard.
+        """
+        with self._lock:
+            # Check if entry already exists (by time and market)
+            existing = any(
+                r.time == reasoning.time and r.market == reasoning.market
+                for r in self._state.ai_reasoning
+            )
+            if not existing:
+                self._state.ai_reasoning.append(reasoning)
+            # Keep last 500 entries (enough for long sessions)
+            self._state.ai_reasoning = self._state.ai_reasoning[-500:]
+            self._dirty = True
+    
+    def update_monte_carlo(self, results: MonteCarloState):
+        """
+        Update Monte Carlo simulation results.
+        
+        The dashboard shows this as risk analysis charts.
+        """
+        with self._lock:
+            self._state.monte_carlo = results
             self._dirty = True
     
     def add_event(self, event_type: str, message: str, details: dict = None):
