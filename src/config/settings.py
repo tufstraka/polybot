@@ -161,14 +161,14 @@ class FiltersConfig(BaseModel):
 class PollingConfig(BaseModel):
     """Price polling configuration."""
     interval_seconds: float = Field(
-        default=1.0,
-        ge=0.1,
+        default=3.0,
+        ge=0.5,
         le=60.0,
-        description="How often to check prices"
+        description="How often to check prices (be respectful of API)"
     )
     market_refresh_seconds: int = Field(
-        default=60,
-        ge=10,
+        default=600,
+        ge=60,
         le=3600,
         description="How often to refresh market list"
     )
@@ -177,6 +177,34 @@ class PollingConfig(BaseModel):
         ge=20,
         le=1000,
         description="Number of price points to keep in memory"
+    )
+    batch_size: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Number of markets to poll per batch"
+    )
+    batch_delay: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=5.0,
+        description="Delay between batches in seconds"
+    )
+
+
+class RateLimitsConfig(BaseModel):
+    """Rate limiting configuration to respect Polymarket's servers."""
+    requests_per_second: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum API requests per second"
+    )
+    request_delay: float = Field(
+        default=0.2,
+        ge=0.05,
+        le=2.0,
+        description="Delay between individual API calls"
     )
 
 
@@ -240,6 +268,7 @@ class Settings(BaseModel):
     risk: RiskConfig = Field(default_factory=RiskConfig)
     filters: FiltersConfig = Field(default_factory=FiltersConfig)
     polling: PollingConfig = Field(default_factory=PollingConfig)
+    rate_limits: RateLimitsConfig = Field(default_factory=RateLimitsConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     env: EnvSettings = Field(default_factory=EnvSettings)
     
@@ -265,6 +294,7 @@ class Settings(BaseModel):
             risk=RiskConfig(**yaml_config.get("risk", {})),
             filters=FiltersConfig(**yaml_config.get("filters", {})),
             polling=PollingConfig(**yaml_config.get("polling", {})),
+            rate_limits=RateLimitsConfig(**yaml_config.get("rate_limits", {})),
             notifications=NotificationsConfig(**yaml_config.get("notifications", {})),
             env=env_settings,
         )

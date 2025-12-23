@@ -68,12 +68,15 @@ class Market:
     yes_price: float = 0.5
     no_price: float = 0.5
     
+    # Trading status from API
+    accepting_orders: bool = False
+    closed: bool = True
+    
     @property
     def is_active(self) -> bool:
-        """Check if market is still active (not resolved)."""
-        if self.end_date:
-            return datetime.now() < self.end_date
-        return True
+        """Check if market is still active and tradable."""
+        # Use the accepting_orders flag from API - this is the definitive indicator
+        return self.accepting_orders and not self.closed
     
     def __str__(self) -> str:
         return f"Market({self.question[:50]}... @ YES={self.yes_price:.2f})"
@@ -274,12 +277,16 @@ class PolymarketClient:
     # Market Data
     # ═══════════════════════════════════════════════════════════════════════════
     
-    async def get_markets(self, limit: int = 100) -> List[Market]:
+    async def get_markets(self, limit: int = 100, active_only: bool = True) -> List[Market]:
         """
-        Fetch active markets from Polymarket.
+        Fetch markets from Polymarket using Gamma API for better market discovery.
+        
+        The Gamma API provides volume, liquidity, and other trading data that
+        the CLOB API doesn't include.
         
         Args:
             limit: Maximum number of markets to fetch
+            active_only: If True, only return markets that are accepting orders
             
         Returns:
             List of Market objects
@@ -287,21 +294,117 @@ class PolymarketClient:
         self._ensure_initialized()
         
         try:
-            # Get markets from the API
-            response = self._client.get_markets()
+            import httpx
             
+            # Use Gamma API for market discovery (has volume, liquidity, etc.)
+            params = {'limit': limit}
+            if active_only:
+                params['active'] = 'true'
+                params['closed'] = 'false'
+            
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                response = await http_client.get(
+                    'https://gamma-api.polymarket.com/markets',
+                    params=params
+                )
+                
+                if response.status_code != 200:
+                    logger.error(f"Gamma API error: {response.status_code}")
+                    return []
+                
+                market_list = response.json()
+            
+            # Parse markets
             markets = []
-            for market_data in response[:limit]:
-                market = self._parse_market(market_data)
+            for market_data in market_list:
+                market = self._parse_gamma_market(market_data)
                 if market:
                     markets.append(market)
             
-            logger.debug(f"Fetched {len(markets)} markets")
+            logger.info(f"Fetched {len(markets)} markets from Gamma API")
             return markets
             
         except Exception as e:
             logger.error(f"Failed to fetch markets: {e}")
             return []
+    
+    def _parse_gamma_market(self, data: Dict[str, Any]) -> Optional[Market]:
+        """Parse market data from Gamma API response."""
+        try:
+            # Get token IDs from clobTokenIds
+            clob_token_ids = data.get("clobTokenIds", [])
+            
+            # Handle case where clobTokenIds might be a string
+            if isinstance(clob_token_ids, str):
+                import json
+                try:
+                    clob_token_ids = json.loads(clob_token_ids)
+                except:
+                    clob_token_ids = []
+            
+            yes_token_id = clob_token_ids[0] if len(clob_token_ids) > 0 else None
+            no_token_id = clob_token_ids[1] if len(clob_token_ids) > 1 else None
+            
+            # Skip markets without token IDs
+            if not yes_token_id:
+                return None
+            
+            # Parse outcome prices - can be array or use bestBid/bestAsk
+            yes_price = 0.5
+            no_price = 0.5
+            
+            # Try bestBid/bestAsk first (more accurate)
+            if data.get("bestBid") is not None and data.get("bestAsk") is not None:
+                try:
+                    bid = float(data["bestBid"])
+                    ask = float(data["bestAsk"])
+                    yes_price = (bid + ask) / 2
+                    no_price = 1 - yes_price
+                except:
+                    pass
+            else:
+                # Fall back to outcomePrices
+                outcome_prices = data.get("outcomePrices", [])
+                if isinstance(outcome_prices, str):
+                    import json
+                    try:
+                        outcome_prices = json.loads(outcome_prices)
+                    except:
+                        outcome_prices = []
+                
+                if outcome_prices and len(outcome_prices) > 0:
+                    try:
+                        yes_price = float(outcome_prices[0])
+                        no_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else (1 - yes_price)
+                    except:
+                        pass
+            
+            # Parse end date
+            end_date = None
+            if data.get("endDate"):
+                try:
+                    end_date = datetime.fromisoformat(data["endDate"].replace("Z", "+00:00"))
+                except:
+                    pass
+            
+            return Market(
+                id=data.get("conditionId", ""),
+                question=data.get("question", "Unknown"),
+                description=data.get("description", "")[:500] if data.get("description") else "",
+                end_date=end_date,
+                volume_24h=float(data.get("volume24hr", 0) or 0),
+                liquidity=float(data.get("liquidityNum", 0) or data.get("liquidity", 0) or 0),
+                tokens=[],  # Gamma API doesn't include full token data
+                yes_token_id=yes_token_id,
+                no_token_id=no_token_id,
+                yes_price=yes_price,
+                no_price=no_price,
+                accepting_orders=bool(data.get("acceptingOrders", False)),
+                closed=bool(data.get("closed", True)),
+            )
+        except Exception as e:
+            logger.error(f"Failed to parse Gamma market data: {e}")
+            return None
     
     async def get_market(self, condition_id: str) -> Optional[Market]:
         """
@@ -349,6 +452,8 @@ class PolymarketClient:
                 no_token_id=no_token.get("token_id") if no_token else None,
                 yes_price=float(yes_token.get("price", 0.5)) if yes_token else 0.5,
                 no_price=float(no_token.get("price", 0.5)) if no_token else 0.5,
+                accepting_orders=bool(data.get("accepting_orders", False)),
+                closed=bool(data.get("closed", True)),
             )
         except Exception as e:
             logger.error(f"Failed to parse market data: {e}")
@@ -369,21 +474,42 @@ class PolymarketClient:
         try:
             response = self._client.get_order_book(token_id)
             
-            bids = [
-                OrderbookLevel(price=float(b.get("price", 0)), size=float(b.get("size", 0)))
-                for b in response.get("bids", [])
-            ]
-            asks = [
-                OrderbookLevel(price=float(a.get("price", 0)), size=float(a.get("size", 0)))
-                for a in response.get("asks", [])
-            ]
+            # Handle OrderBookSummary object (py-clob-client returns objects, not dicts)
+            if hasattr(response, 'bids') and hasattr(response, 'asks'):
+                # It's an OrderBookSummary object
+                bids = [
+                    OrderbookLevel(
+                        price=float(b.price) if hasattr(b, 'price') else float(b.get("price", 0)),
+                        size=float(b.size) if hasattr(b, 'size') else float(b.get("size", 0))
+                    )
+                    for b in (response.bids or [])
+                ]
+                asks = [
+                    OrderbookLevel(
+                        price=float(a.price) if hasattr(a, 'price') else float(a.get("price", 0)),
+                        size=float(a.size) if hasattr(a, 'size') else float(a.get("size", 0))
+                    )
+                    for a in (response.asks or [])
+                ]
+                market_id = response.market if hasattr(response, 'market') else ""
+            else:
+                # Fall back to dict handling
+                bids = [
+                    OrderbookLevel(price=float(b.get("price", 0)), size=float(b.get("size", 0)))
+                    for b in response.get("bids", [])
+                ]
+                asks = [
+                    OrderbookLevel(price=float(a.get("price", 0)), size=float(a.get("size", 0)))
+                    for a in response.get("asks", [])
+                ]
+                market_id = response.get("market", "")
             
             # Sort bids descending, asks ascending
             bids.sort(key=lambda x: x.price, reverse=True)
             asks.sort(key=lambda x: x.price)
             
             return Orderbook(
-                market_id=response.get("market", ""),
+                market_id=market_id,
                 token_id=token_id,
                 bids=bids,
                 asks=asks,

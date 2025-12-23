@@ -94,18 +94,39 @@ filters:
   max_spread_percent: 3.0
 
 # ─────────────────────────────────────────────────────────────────
-# POLLING
-# How often to check prices
+# POLLING - BE RESPECTFUL OF POLYMARKET'S SERVERS
+# How often to check prices (don't spam the API!)
 # ─────────────────────────────────────────────────────────────────
 polling:
   # Check prices every X seconds
-  interval_seconds: 1
+  # 3 seconds = ~20 requests/min per market (reasonable)
+  interval_seconds: 3
   
   # Refresh market list every X seconds
-  market_refresh_seconds: 60
+  # 600 = every 10 minutes (was 60 seconds)
+  market_refresh_seconds: 600
   
   # How many price points to keep in memory
   price_history_size: 60
+  
+  # How many markets to poll per batch
+  # Smaller = spreads requests over time
+  batch_size: 10
+  
+  # Delay between batches (seconds)
+  # Prevents burst of requests
+  batch_delay: 0.5
+
+# ─────────────────────────────────────────────────────────────────
+# RATE LIMITING - RESPECT POLYMARKET'S API
+# Don't overwhelm their servers!
+# ─────────────────────────────────────────────────────────────────
+rate_limits:
+  # Maximum API requests per second
+  requests_per_second: 5
+  
+  # Pause between individual API calls (seconds)
+  request_delay: 0.2
 
 # ─────────────────────────────────────────────────────────────────
 # NOTIFICATIONS

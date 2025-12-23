@@ -157,19 +157,77 @@ class MarketScanner:
             # Fetch markets from API
             markets = await self.client.get_markets(limit=200)
             
-            # Update cache
-            self._markets = {m.id: m for m in markets}
+            # Filter by basic criteria first
+            filtered = self.filter_markets(markets)
+            
+            # Validate orderbooks - many markets have accepting_orders=True but no orderbook
+            validated = await self._validate_orderbooks(filtered, max_markets=50)
+            
+            # Update cache with only validated markets
+            self._markets = {m.id: m for m in validated}
             self._last_refresh = datetime.now()
             
             # Score markets
             await self._score_markets()
             
-            logger.info(f"Refreshed {len(self._markets)} markets")
+            logger.info(f"Refreshed {len(self._markets)} markets with valid orderbooks")
             return len(self._markets)
             
         except Exception as e:
             logger.error(f"Failed to refresh markets: {e}")
             return len(self._markets)
+    
+    async def _validate_orderbooks(self, markets: List[Market], max_markets: int = 50) -> List[Market]:
+        """
+        Validate that markets have actual orderbooks.
+        
+        Some markets have accepting_orders=True but no orderbook yet.
+        This filters those out by checking if orderbook exists.
+        
+        Uses rate limiting to be respectful of Polymarket's servers.
+        
+        Args:
+            markets: List of markets to validate
+            max_markets: Maximum number of markets to return (to limit API calls)
+            
+        Returns:
+            Markets with valid orderbooks
+        """
+        validated = []
+        checked = 0
+        no_orderbook = 0
+        
+        # Rate limiting settings
+        request_delay = self.settings.rate_limits.request_delay
+        batch_size = 10  # Validate in batches
+        
+        for market in markets:
+            if len(validated) >= max_markets:
+                break
+                
+            if not market.yes_token_id:
+                continue
+            
+            # Try to get orderbook - if it fails, market doesn't have one
+            orderbook = await self.client.get_orderbook(market.yes_token_id)
+            checked += 1
+            
+            if orderbook and (orderbook.bids or orderbook.asks):
+                # Market has a valid orderbook
+                validated.append(market)
+                logger.debug(f"✓ Valid: {market.question[:40]}... (depth=${orderbook.bid_depth:.2f}/${orderbook.ask_depth:.2f})")
+            else:
+                no_orderbook += 1
+            
+            # Rate limit - delay after each request
+            await asyncio.sleep(request_delay)
+            
+            # Extra delay between batches
+            if checked % batch_size == 0:
+                await asyncio.sleep(0.5)
+        
+        logger.info(f"Orderbook validation: {len(validated)} valid / {checked} checked ({no_orderbook} no orderbook)")
+        return validated
     
     async def _score_markets(self):
         """Score all markets for tradability ranking."""
@@ -207,24 +265,42 @@ class MarketScanner:
         """
         filtered = []
         
+        # Debug counters
+        no_token = 0
+        low_volume = 0
+        inactive = 0
+        blacklisted = 0
+        
         for market in markets:
             # Skip blacklisted
             if market.id in self._blacklist:
+                blacklisted += 1
                 continue
             
-            # Check minimum volume
-            if market.volume_24h < self.settings.filters.min_daily_volume:
-                continue
-            
-            # Check if market is active
+            # Check if market is active (accepting orders)
             if not market.is_active:
+                inactive += 1
                 continue
             
             # Check if we have token IDs
             if not market.yes_token_id:
+                no_token += 1
+                continue
+            
+            # Note: Volume check is skipped because CLOB API doesn't include volume data.
+            # Liquidity will be checked when we fetch orderbooks.
+            # Only check volume if it's actually populated (non-zero)
+            if market.volume_24h > 0 and market.volume_24h < self.settings.filters.min_daily_volume:
+                low_volume += 1
                 continue
             
             filtered.append(market)
+        
+        # Log filter stats
+        logger.info(
+            f"Filter stats: {len(markets)} total -> {len(filtered)} passed | "
+            f"low_volume={low_volume}, no_token={no_token}, inactive={inactive}, blacklisted={blacklisted}"
+        )
         
         return filtered
     

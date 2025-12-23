@@ -45,12 +45,12 @@ import traceback
 # Set up path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config.settings import load_config
-from src.core.client import PolymarketClient
-from src.core.scanner import MarketScanner
-from src.core.tracker import PriceTracker, MarketSnapshot
-from src.core.detector import SpikeDetector, DetectionResult
-from src.core.executor import OrderExecutor
+from src.config.settings import get_settings, Settings
+from src.core.client import PolymarketClient, Market
+from src.core.scanner import MarketScanner, MarketSnapshot
+from src.core.tracker import PriceTracker
+from src.core.detector import SpikeDetector, DetectionResult, TradingSignal, SignalDirection
+from src.core.executor import OrderExecutor, ExecutionStatus
 from src.core.position_manager import PositionManager
 from src.core.state_writer import (
     StateWriter, MarketState, SignalState, PositionState,
@@ -82,13 +82,13 @@ class Polybot:
             dry_run: Override dry_run setting (None = use config)
         """
         # Load configuration
-        self.config = load_config(config_path)
+        self.config: Settings = get_settings(config_path)
         
         # Override dry run if specified
         if dry_run is not None:
-            self.config.trading.dry_run = dry_run
-        
-        self.dry_run = self.config.trading.dry_run
+            self.dry_run = dry_run
+        else:
+            self.dry_run = self.config.mode.paper_trading
         
         # Initialize logging
         self._setup_logging()
@@ -115,7 +115,7 @@ class Polybot:
         
     def _setup_logging(self):
         """Configure logging based on settings."""
-        log_level = getattr(logging, self.config.logging.level.upper(), logging.INFO)
+        log_level = getattr(logging, self.config.env.log_level.upper(), logging.INFO)
         
         # Create formatter
         formatter = logging.Formatter(
@@ -127,75 +127,51 @@ class Polybot:
         console.setLevel(log_level)
         console.setFormatter(formatter)
         
-        # File handler (if configured)
-        handlers = [console]
-        
-        log_file = self.config.logging.file
-        if log_file:
-            Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(log_file)
-            file_handler.setLevel(log_level)
-            file_handler.setFormatter(formatter)
-            handlers.append(file_handler)
-        
         # Configure root logger
-        logging.basicConfig(level=log_level, handlers=handlers)
+        logging.basicConfig(level=log_level, handlers=[console])
     
     async def _initialize_components(self):
         """Initialize all bot components."""
         self.logger.info("Initializing components...")
         
         # Polymarket client
-        self.client = PolymarketClient(
-            host=self.config.polymarket.api_url,
-            key=self.config.polymarket.api_key,
-            secret=self.config.polymarket.api_secret,
-            passphrase=self.config.polymarket.passphrase,
-            chain_id=self.config.polymarket.chain_id
-        )
+        self.client = PolymarketClient(settings=self.config)
+        await self.client.initialize()
         
-        # Market scanner
+        # Market scanner - takes client and optional settings
         self.scanner = MarketScanner(
             client=self.client,
-            min_volume=self.config.detection.min_volume,
-            max_markets=50  # Track up to 50 markets
+            settings=self.config
         )
         
-        # Price tracker
-        self.tracker = PriceTracker(
-            window_size=self.config.detection.lookback_window,
-            ewma_span=self.config.detection.ewma_span
-        )
+        # Price tracker - takes optional settings
+        self.tracker = PriceTracker(settings=self.config)
         
-        # Spike detector
+        # Spike detector - takes tracker and optional settings
         self.detector = SpikeDetector(
-            cusum_threshold=self.config.detection.cusum_threshold,
-            cusum_drift=self.config.detection.cusum_drift,
-            ewma_span=self.config.detection.ewma_span,
-            ewma_band_width=self.config.detection.ewma_band_width,
-            roc_threshold=self.config.detection.roc_threshold,
-            min_liquidity=self.config.detection.min_liquidity
+            tracker=self.tracker,
+            settings=self.config
         )
         
-        # Order executor
+        # Order executor - takes client and optional settings
         self.executor = OrderExecutor(
             client=self.client,
-            dry_run=self.dry_run,
-            default_slippage=0.02  # 2% slippage tolerance
+            settings=self.config
         )
         
-        # Position manager
+        # Position manager - takes optional settings and state_file
         self.position_manager = PositionManager(
+            settings=self.config,
             state_file="data/positions.json"
         )
         
-        # Risk manager
+        # Risk manager - has explicit parameters
         self.risk_manager = RiskManager(
-            initial_capital=self.config.money.initial_capital,
-            max_daily_loss=self.config.risk.max_daily_loss,
-            max_position_size=self.config.risk.max_position_size,
-            min_position_size=self.config.risk.min_position_size,
-            max_consecutive_losses=self.config.risk.max_consecutive_losses,
+            initial_capital=self.config.money.starting_balance,
+            max_daily_loss=self.config.money.max_daily_loss,
+            max_position_size=self.config.money.bet_size,
+            min_position_size=0.5,  # Minimum $0.50
+            max_consecutive_losses=3,
             circuit_breaker_minutes=30,
             state_file="data/risk_state.json"
         )
@@ -209,19 +185,21 @@ class Polybot:
         self.notifier = NotificationManager()
         
         # Add Telegram notifier if configured
-        if self.config.notifications.telegram_enabled:
+        telegram_config = self.config.get_telegram_config()
+        if telegram_config:
             telegram = TelegramNotifier(
-                bot_token=self.config.notifications.telegram_token,
-                chat_id=self.config.notifications.telegram_chat_id,
-                enabled=self.config.notifications.telegram_enabled
+                bot_token=telegram_config[0],
+                chat_id=telegram_config[1],
+                enabled=True
             )
             self.notifier.add_notifier(telegram)
         
         # Add Discord notifier if configured
-        if self.config.notifications.discord_enabled:
+        discord_url = self.config.get_discord_config()
+        if discord_url:
             discord = DiscordNotifier(
-                webhook_url=self.config.notifications.discord_webhook,
-                enabled=self.config.notifications.discord_enabled
+                webhook_url=discord_url,
+                enabled=True
             )
             self.notifier.add_notifier(discord)
         
@@ -252,8 +230,8 @@ class Polybot:
             await self.notifier.notify_status(
                 f"🚀 Polybot started ({'DRY RUN' if self.dry_run else 'LIVE'})",
                 {
-                    "capital": self.config.money.initial_capital,
-                    "daily_limit": self.config.risk.max_daily_loss
+                    "capital": self.config.money.starting_balance,
+                    "daily_limit": self.config.money.max_daily_loss
                 }
             )
             
@@ -265,8 +243,10 @@ class Polybot:
         except Exception as e:
             self.logger.error(f"Fatal error: {e}")
             self.logger.error(traceback.format_exc())
-            self.state_writer.record_error(str(e))
-            await self.notifier.notify_error(str(e), traceback.format_exc())
+            if self.state_writer:
+                self.state_writer.record_error(str(e))
+            if self.notifier:
+                await self.notifier.notify_error(str(e), traceback.format_exc())
             raise
         finally:
             await self.stop()
@@ -295,10 +275,9 @@ class Polybot:
         """Main trading loop."""
         self.logger.info("Entering main loop...")
         
-        poll_interval = self.config.polling.interval
-        market_refresh_interval = self.config.polling.market_refresh
+        poll_interval = self.config.polling.interval_seconds
+        market_refresh_interval = self.config.polling.market_refresh_seconds
         
-        last_market_refresh = 0
         loop_count = 0
         
         while self._running:
@@ -337,7 +316,9 @@ class Polybot:
                 break
             except Exception as e:
                 self.logger.error(f"Error in main loop: {e}")
-                self.state_writer.record_error(str(e))
+                self.logger.error(traceback.format_exc())
+                if self.state_writer:
+                    self.state_writer.record_error(str(e))
                 await asyncio.sleep(poll_interval)
     
     def _check_new_day(self):
@@ -354,17 +335,18 @@ class Polybot:
         self.logger.debug("Refreshing market list...")
         
         try:
-            markets = await self.scanner.get_active_markets()
+            # Use scanner to refresh and get tradable markets
+            await self.scanner.refresh_markets()
+            markets = await self.scanner.get_tradable_markets(limit=50)
             
             # Update tracked markets
+            self._tracked_markets.clear()
             for market in markets:
-                market_id = market.get("condition_id") or market.get("id")
-                if market_id:
-                    self._tracked_markets[market_id] = market
+                self._tracked_markets[market.id] = market
             
             self.logger.info(f"Tracking {len(self._tracked_markets)} markets")
             self.state_writer.add_event(
-                "system", 
+                "system",
                 f"Refreshed markets: {len(self._tracked_markets)} active"
             )
             
@@ -372,56 +354,60 @@ class Polybot:
             self.logger.error(f"Failed to refresh markets: {e}")
     
     async def _update_prices(self):
-        """Update prices for all tracked markets."""
-        for market_id, market in list(self._tracked_markets.items()):
-            try:
-                # Get latest price
-                price_data = await self.client.get_market_price(market_id)
-                
-                if not price_data:
-                    continue
-                
-                current_price = price_data.get("price", 0.5)
-                volume = price_data.get("volume", 0)
-                
-                # Update tracker
-                indicators = self.tracker.update(market_id, current_price)
-                
-                # Get orderbook for liquidity check
-                orderbook = await self.client.get_orderbook(market_id)
-                
-                # Create snapshot
-                snapshot = MarketSnapshot(
-                    market_id=market_id,
-                    name=market.get("question", market_id)[:50],
-                    price=current_price,
-                    volume_24h=volume,
-                    bid_price=orderbook.get("best_bid", current_price - 0.01),
-                    ask_price=orderbook.get("best_ask", current_price + 0.01),
-                    bid_size=orderbook.get("bid_size", 100),
-                    ask_size=orderbook.get("ask_size", 100),
-                    timestamp=datetime.utcnow()
-                )
-                
-                # Update state
-                if indicators:
-                    market_state = MarketState(
-                        market_id=market_id,
-                        name=snapshot.name,
-                        current_price=current_price,
-                        ewma_price=indicators.ewma_price,
-                        ewma_upper=indicators.ewma_upper,
-                        ewma_lower=indicators.ewma_lower,
-                        roc=indicators.roc,
-                        cusum_pos=indicators.cusum_pos,
-                        cusum_neg=indicators.cusum_neg,
-                        volume_24h=volume,
-                        last_updated=datetime.utcnow().isoformat()
-                    )
-                    self.state_writer.update_market(market_state)
-                
-            except Exception as e:
-                self.logger.warning(f"Failed to update price for {market_id}: {e}")
+        """Update prices for all tracked markets with rate limiting."""
+        market_list = list(self._tracked_markets.items())
+        
+        # Get rate limiting settings
+        batch_size = self.config.polling.batch_size
+        batch_delay = self.config.polling.batch_delay
+        request_delay = self.config.rate_limits.request_delay
+        
+        # Process in batches to avoid overwhelming the API
+        total_markets = len(market_list)
+        batches_processed = 0
+        
+        for i in range(0, total_markets, batch_size):
+            batch = market_list[i:i + batch_size]
+            batches_processed += 1
+            
+            for market_id, market in batch:
+                try:
+                    # Get snapshot with orderbook from scanner
+                    snapshot = await self.scanner.get_market_snapshot(market_id)
+                    
+                    if not snapshot:
+                        continue
+                    
+                    # Update tracker with snapshot
+                    indicators = self.tracker.update(snapshot)
+                    
+                    # Update state for dashboard
+                    if indicators:
+                        market_state = MarketState(
+                            market_id=market_id,
+                            name=market.question[:50] if market.question else market_id,
+                            current_price=indicators.current_price,
+                            ewma_price=indicators.ewma_mean,
+                            ewma_upper=indicators.ewma_upper_band,
+                            ewma_lower=indicators.ewma_lower_band,
+                            roc=indicators.roc,
+                            cusum_pos=indicators.cusum_positive,
+                            cusum_neg=indicators.cusum_negative,
+                            volume_24h=market.volume_24h,
+                            last_updated=datetime.utcnow().isoformat()
+                        )
+                        self.state_writer.update_market(market_state)
+                    
+                    # Rate limit: delay between individual requests
+                    await asyncio.sleep(request_delay)
+                    
+                except Exception as e:
+                    self.logger.warning(f"Failed to update price for {market_id}: {e}")
+            
+            # Delay between batches (if more batches remaining)
+            if i + batch_size < total_markets:
+                self.logger.debug(f"Processed batch {batches_processed}/{(total_markets + batch_size - 1) // batch_size}")
+                await asyncio.sleep(batch_delay)
     
     async def _check_signals(self):
         """Check for spike signals and potentially open trades."""
@@ -433,35 +419,24 @@ class Polybot:
         for market_id, market in list(self._tracked_markets.items()):
             try:
                 # Skip if we already have a position
-                if self.position_manager.has_position(market_id):
+                if self.position_manager.has_position_for_market(market_id):
                     continue
                 
-                # Get latest snapshot
+                # Get history to check if we have enough data
                 history = self.tracker.get_history(market_id)
-                if not history or len(history) < 10:
+                if not history or not history.has_enough_data:
                     continue
                 
-                latest = history[-1]
+                # Get snapshot with orderbook
+                snapshot = await self.scanner.get_market_snapshot(market_id)
+                if not snapshot or not snapshot.is_tradable:
+                    continue
                 
-                # Get orderbook for the check
-                orderbook = await self.client.get_orderbook(market_id)
-                
-                snapshot = MarketSnapshot(
-                    market_id=market_id,
-                    name=market.get("question", market_id)[:50],
-                    price=latest.price,
-                    volume_24h=market.get("volume", 0),
-                    bid_price=orderbook.get("best_bid", latest.price - 0.01),
-                    ask_price=orderbook.get("best_ask", latest.price + 0.01),
-                    bid_size=orderbook.get("bid_size", 100),
-                    ask_size=orderbook.get("ask_size", 100),
-                    timestamp=datetime.utcnow()
-                )
-                
-                # Check for spike
+                # Check for spike using detector
                 result = self.detector.check(snapshot)
                 
-                if result.is_spike:
+                # Check if signal is valid (all layers passed)
+                if result.is_signal:
                     await self._handle_signal(snapshot, result)
                     
             except Exception as e:
@@ -469,64 +444,59 @@ class Polybot:
     
     async def _handle_signal(self, snapshot: MarketSnapshot, result: DetectionResult):
         """Handle a detected spike signal."""
+        market_name = snapshot.market.question[:50] if snapshot.market.question else snapshot.market.id
+        market_id = snapshot.market.id
+        
         self.logger.info(
-            f"🎯 SIGNAL: {snapshot.name} | "
-            f"Direction: {result.direction} | "
+            f"🎯 SIGNAL: {market_name} | "
+            f"Direction: {result.signal.value} | "
             f"Confidence: {result.confidence:.0%}"
         )
         
-        # Create signal state
+        # Create trading signal from detection result
+        trading_signal = self.detector.create_signal(result, snapshot)
+        if not trading_signal:
+            self.logger.debug("Signal creation failed (possibly in cooldown)")
+            return
+        
+        # Create signal state for dashboard
         signal_id = f"sig_{datetime.utcnow().timestamp():.0f}"
-        signal = SignalState(
+        signal_state = SignalState(
             signal_id=signal_id,
-            market_id=snapshot.market_id,
-            market_name=snapshot.name,
-            direction=result.direction,
+            market_id=market_id,
+            market_name=market_name,
+            direction=result.signal.value,
             price=snapshot.price,
             confidence=result.confidence,
             detected_at=datetime.utcnow().isoformat(),
-            trigger_reason=result.trigger_reason
+            trigger_reason=f"CUSUM: {result.cusum_result.message if result.cusum_result else 'N/A'}"
         )
-        self.state_writer.add_signal(signal)
+        self.state_writer.add_signal(signal_state)
         
         # Send notification
         await self.notifier.notify_signal(
-            market=snapshot.name,
-            direction=result.direction,
+            market=market_name,
+            direction=result.signal.value,
             price=snapshot.price,
             confidence=result.confidence,
-            market_id=snapshot.market_id
+            market_id=market_id
         )
         
-        # Calculate position size
+        # Calculate position size from risk manager
         position_size = self.risk_manager.calculate_position_size(
             confidence=result.confidence
         )
         
-        # Determine trade side (mean reversion: opposite of spike)
-        # If price spiked UP, we SELL (expecting it to come down)
-        # If price spiked DOWN, we BUY (expecting it to come up)
-        trade_side = "SELL" if result.direction == "up" else "BUY"
-        
-        # Open the trade
+        # Open the trade using executor
         try:
-            order_result = await self.executor.execute(
-                market_id=snapshot.market_id,
-                side=trade_side,
-                size=position_size,
-                price=snapshot.price
-            )
+            execution_result = await self.executor.execute(trading_signal)
             
-            if order_result.success:
+            if execution_result.status == ExecutionStatus.SUCCESS:
                 # Record in position manager
                 position = self.position_manager.open_position(
-                    market_id=snapshot.market_id,
-                    market_name=snapshot.name,
-                    side=trade_side,
-                    entry_price=order_result.executed_price,
-                    size=position_size,
-                    stop_loss=result.recommended_stop,
-                    take_profit=result.recommended_target
+                    signal=trading_signal,
+                    execution=execution_result,
+                    market_name=market_name
                 )
                 
                 # Record in risk manager
@@ -535,36 +505,37 @@ class Polybot:
                 # Update signal status
                 self.state_writer.update_signal_status(signal_id, "traded")
                 
-                # Update state
+                # Update state for dashboard
                 pos_state = PositionState(
-                    position_id=position.position_id,
-                    market_id=snapshot.market_id,
-                    market_name=snapshot.name,
-                    side=trade_side,
-                    entry_price=order_result.executed_price,
+                    position_id=position.id,
+                    market_id=market_id,
+                    market_name=market_name,
+                    side=trading_signal.direction.value,
+                    entry_price=execution_result.executed_price,
                     current_price=snapshot.price,
-                    size=position_size,
+                    size=execution_result.executed_size,
                     unrealized_pnl=0.0,
-                    stop_loss=result.recommended_stop,
-                    take_profit=result.recommended_target,
+                    stop_loss=trading_signal.stop_loss,
+                    take_profit=trading_signal.take_profit,
                     opened_at=datetime.utcnow().isoformat()
                 )
                 self.state_writer.update_position(pos_state)
                 
                 # Notify
                 await self.notifier.notify_trade_open(
-                    market=snapshot.name,
-                    side=trade_side,
-                    price=order_result.executed_price,
-                    size=position_size,
-                    market_id=snapshot.market_id
+                    market=market_name,
+                    side=trading_signal.direction.value,
+                    price=execution_result.executed_price,
+                    size=execution_result.executed_size,
+                    market_id=market_id
                 )
                 
                 self.logger.info(
-                    f"✅ Trade opened: {trade_side} ${position_size:.2f} @ ${order_result.executed_price:.3f}"
+                    f"✅ Trade opened: {trading_signal.direction.value} "
+                    f"${execution_result.executed_size:.2f} @ ${execution_result.executed_price:.3f}"
                 )
             else:
-                self.logger.warning(f"Trade failed: {order_result.error}")
+                self.logger.warning(f"Trade failed: {execution_result.error_message}")
                 self.state_writer.update_signal_status(signal_id, "failed")
                 
         except Exception as e:
@@ -573,95 +544,98 @@ class Polybot:
     
     async def _monitor_positions(self):
         """Monitor open positions for exit conditions."""
-        positions = self.position_manager.get_open_positions()
+        positions = self.position_manager.open_positions
         
         for position in positions:
             try:
-                # Get current price
-                price_data = await self.client.get_market_price(position.market_id)
-                if not price_data:
+                # Get current price from scanner snapshot
+                snapshot = await self.scanner.get_market_snapshot(position.market_id)
+                if not snapshot:
                     continue
                 
-                current_price = price_data.get("price", position.entry_price)
+                current_price = snapshot.price
                 
-                # Check for exit
-                exit_result = self.position_manager.check_exit(
-                    position.position_id,
-                    current_price
-                )
+                # Update price in position manager
+                self.position_manager.update_price(position.token_id, current_price)
                 
-                if exit_result.should_exit:
-                    await self._close_position(position, current_price, exit_result.reason)
-                else:
-                    # Update position state
-                    pnl = self.position_manager.calculate_pnl(
-                        position.position_id, 
-                        current_price
-                    )
-                    
+                # Check for exit conditions (stop loss / take profit)
+                exits = self.position_manager.check_exits()
+                
+                # Handle any exits that were triggered
+                for closed_position in exits:
+                    if closed_position.id == position.id:
+                        await self._handle_closed_position(closed_position)
+                
+                # If position still open, update dashboard state
+                if position.is_open:
                     pos_state = PositionState(
-                        position_id=position.position_id,
+                        position_id=position.id,
                         market_id=position.market_id,
                         market_name=position.market_name,
-                        side=position.side,
+                        side=position.side.value,
                         entry_price=position.entry_price,
                         current_price=current_price,
-                        size=position.size,
-                        unrealized_pnl=pnl,
+                        size=position.entry_size,
+                        unrealized_pnl=position.unrealized_pnl,
                         stop_loss=position.stop_loss,
                         take_profit=position.take_profit,
-                        opened_at=position.opened_at.isoformat()
+                        opened_at=position.entry_time.isoformat()
                     )
                     self.state_writer.update_position(pos_state)
                     
             except Exception as e:
-                self.logger.warning(f"Failed to monitor position {position.position_id}: {e}")
+                self.logger.warning(f"Failed to monitor position {position.id}: {e}")
+    
+    async def _handle_closed_position(self, position):
+        """Handle a position that was closed by check_exits."""
+        self.logger.info(f"Position {position.id} closed: {position.exit_reason}")
+        
+        # Record in risk manager
+        self.risk_manager.record_trade_result(position.realized_pnl)
+        
+        # Update state
+        self.state_writer.close_position(position.id)
+        self.state_writer.add_event(
+            "trade",
+            f"Closed {position.market_name}: ${position.realized_pnl:+.2f} ({position.exit_reason})"
+        )
+        
+        # Notify
+        await self.notifier.notify_trade_close(
+            market=position.market_name,
+            pnl=position.realized_pnl,
+            entry_price=position.entry_price,
+            exit_price=position.exit_price,
+            exit_reason=position.exit_reason
+        )
+        
+        self.logger.info(f"✅ Position closed: ${position.realized_pnl:+.2f}")
     
     async def _close_position(self, position, current_price: float, reason: str):
-        """Close a position."""
-        self.logger.info(f"Closing position {position.position_id}: {reason}")
+        """Manually close a position."""
+        self.logger.info(f"Closing position {position.id}: {reason}")
         
         try:
-            # Execute closing order
-            close_side = "SELL" if position.side == "BUY" else "BUY"
-            
-            order_result = await self.executor.execute(
-                market_id=position.market_id,
-                side=close_side,
-                size=position.size,
-                price=current_price
+            # Close position using executor
+            execution_result = await self.executor.close_position(
+                token_id=position.token_id,
+                size=position.entry_size,
+                current_price=current_price,
+                reason=reason
             )
             
-            if order_result.success:
-                # Calculate P&L
-                pnl = self.position_manager.close_position(
-                    position.position_id,
-                    order_result.executed_price,
+            if execution_result.status == ExecutionStatus.SUCCESS:
+                # Close in position manager
+                closed_position = self.position_manager.close_position(
+                    position.id,
+                    execution_result.executed_price,
                     reason
                 )
                 
-                # Record in risk manager
-                self.risk_manager.record_trade_result(pnl)
-                
-                # Update state
-                self.state_writer.close_position(position.position_id)
-                self.state_writer.add_event(
-                    "trade",
-                    f"Closed {position.market_name}: ${pnl:+.2f} ({reason})"
-                )
-                
-                # Notify
-                await self.notifier.notify_trade_close(
-                    market=position.market_name,
-                    pnl=pnl,
-                    entry_price=position.entry_price,
-                    exit_price=order_result.executed_price,
-                    exit_reason=reason
-                )
-                
-                self.logger.info(f"✅ Position closed: ${pnl:+.2f}")
+                if closed_position:
+                    await self._handle_closed_position(closed_position)
             else:
-                self.logger.warning(f"Close order failed: {order_result.error}")
+                self.logger.warning(f"Close order failed: {execution_result.error_message}")
                 
         except Exception as e:
             self.logger.error(f"Failed to close position: {e}")
