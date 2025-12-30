@@ -30,7 +30,7 @@ Polybot watches Polymarket prediction markets using a **hybrid AI + technical an
 - ROC momentum confirmation
 - Liquidity validation
 
-### AI Integration (NEW)
+### AI Integration 
 🤖 **Amazon Bedrock Models**
 - Claude 3 Sonnet/Haiku for market reasoning
 - Titan Text for cost-effective analysis
